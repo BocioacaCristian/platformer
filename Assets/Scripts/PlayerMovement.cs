@@ -7,6 +7,12 @@ public class PlayerMovement : MonoBehaviour
     // These variables control how the player moves and jumps
     [SerializeField] public float moveSpeed; // How fast the player moves horizontally
     [SerializeField] public float jumpForce; // How high the player jumps
+    [SerializeField] public float wallJumpForce = 10f; // Force applied when wall jumping
+    [SerializeField] public float directedWallJumpForce = 12f; // Force when jumping opposite direction
+    [SerializeField] public float wallSlideSpeed = 2f; // How fast player slides down walls
+    [SerializeField] public LayerMask wallLayer; // Layer to detect walls
+    [SerializeField] public float wallCheckDistance = 0.5f; // Distance to check for walls
+    [SerializeField] public float wallJumpTime = 0.2f; // Time to control the wall jump trajectory
     
     // Private variables used within this class only
     private Rigidbody2D rb; // Reference to the physics component on this GameObject
@@ -17,6 +23,11 @@ public class PlayerMovement : MonoBehaviour
     private bool isFlipping = false; // Flag to track if we're currently flipping
     private bool isJumping = false; // Tracks if player is jumping
     private bool grounded = false; // Tracks if player is on the ground
+    private bool isTouchingWall = false; // Tracks if player is touching a wall
+    private bool isWallSliding = false; // Tracks if player is sliding down a wall
+    private bool isWallJumping = false; // Track if currently in wall jump
+    private float wallJumpCounter = 0f; // Counter for wall jump control period
+    private int wallDirX = 0; // Direction of the wall (-1: left, 1: right)
     
     // Start is called once before the first execution of Update after the MonoBehaviour is created
     // This is where we initialize our components and variables
@@ -31,29 +42,67 @@ public class PlayerMovement : MonoBehaviour
     // Used for input detection and non-physics logic
     void Update()
     {
+        // Handle wall jump counter
+        if (isWallJumping)
+        {
+            wallJumpCounter -= Time.deltaTime;
+            if (wallJumpCounter <= 0)
+            {
+                isWallJumping = false;
+            }
+        }
+        
         // GetAxisRaw returns -1 (left), 0 (no input), or 1 (right)
         // Input axes are defined in Unity's Input Manager
         moveInput = Input.GetAxisRaw("Horizontal");
         
-        // Check if player is running
-        isRunning = Mathf.Abs(moveInput) > 0.1f;
+        // Check if player is running (only if not wall jumping)
+        isRunning = Mathf.Abs(moveInput) > 0.1f && !isWallJumping;
         
-        // Check for jump button press (usually Space)
-        // GetButtonDown triggers once when the button is first pressed
-        if (Input.GetButtonDown("Jump") && grounded)
+        // Check for walls
+        CheckForWalls();
+        
+        // Handle wall sliding
+        HandleWallSliding();
+        
+        // Check for jump or wall jump
+        if (Input.GetButtonDown("Jump"))
         {
-            Jump();
+            if (grounded)
+            {
+                Jump();
+            }
+            else if (isWallSliding)
+            {
+                // Determine if this is a directed wall jump
+                bool isDirectedJump = (wallDirX > 0 && moveInput < 0) || (wallDirX < 0 && moveInput > 0);
+                
+                if (isDirectedJump)
+                {
+                    // Player is pressing in the opposite direction of the wall
+                    DirectedWallJump();
+                }
+                else
+                {
+                    // Regular wall jump
+                    WallJump();
+                }
+            }
         }
         
-        // Flip the player sprite based on movement direction
-        // Only flip if we're actually moving in that direction
-        if (moveInput > 0 && !facingRight)
+        // Only flip based on input if not wall jumping
+        if (!isWallJumping)
         {
-            Flip();
-        }
-        else if (moveInput < 0 && facingRight)
-        {
-            Flip();
+            // Flip the player sprite based on movement direction
+            // Only flip if we're actually moving in that direction
+            if (moveInput > 0 && !facingRight)
+            {
+                Flip();
+            }
+            else if (moveInput < 0 && facingRight)
+            {
+                Flip();
+            }
         }
         
         // Set animator parameters - do this AFTER flipping logic
@@ -63,6 +112,7 @@ public class PlayerMovement : MonoBehaviour
             // This ensures we don't switch animations during a flip
             animator.SetBool("Run", isRunning);
             animator.SetBool("grounded", grounded);
+            animator.SetBool("WallSlide", isWallSliding);
         }
     }
     
@@ -70,9 +120,137 @@ public class PlayerMovement : MonoBehaviour
     // Used for physics calculations to ensure consistent behavior
     void FixedUpdate()
     {
+        // If wall jumping, let the physics handle the movement
+        if (isWallJumping)
+        {
+            return;
+        }
+        
         // Move the player horizontally at a constant speed
         // We only modify the X velocity, preserving the Y velocity (for gravity/jumping)
-        rb.linearVelocity = new Vector2(moveInput * moveSpeed, rb.linearVelocity.y);
+        // Don't apply horizontal movement during wall slide if pushing into wall
+        if (!isWallSliding || (moveInput * (facingRight ? 1 : -1) < 0))
+        {
+            rb.linearVelocity = new Vector2(moveInput * moveSpeed, rb.linearVelocity.y);
+        }
+    }
+    
+    // Check if player is touching a wall
+    private void CheckForWalls()
+    {
+        // Cast rays in both left and right directions
+        RaycastHit2D hitRight = Physics2D.Raycast(transform.position, Vector2.right, wallCheckDistance, wallLayer);
+        RaycastHit2D hitLeft = Physics2D.Raycast(transform.position, Vector2.left, wallCheckDistance, wallLayer);
+        
+        // Determine wall direction
+        if (hitRight.collider != null)
+        {
+            isTouchingWall = true;
+            wallDirX = 1;
+        }
+        else if (hitLeft.collider != null)
+        {
+            isTouchingWall = true;
+            wallDirX = -1;
+        }
+        else
+        {
+            isTouchingWall = false;
+            wallDirX = 0;
+        }
+    }
+    
+    // Handle wall sliding
+    private void HandleWallSliding()
+    {
+        // Don't wall slide if wall jumping
+        if (isWallJumping)
+        {
+            isWallSliding = false;
+            return;
+        }
+        
+        // Wall slide if touching wall, not grounded, and moving into the wall or not moving
+        isWallSliding = isTouchingWall && !grounded && 
+                        ((wallDirX > 0 && moveInput > 0) || (wallDirX < 0 && moveInput < 0) || moveInput == 0);
+        
+        // Apply wall slide speed
+        if (isWallSliding)
+        {
+            // Limit falling speed
+            float yVelocity = Mathf.Max(rb.linearVelocity.y, -wallSlideSpeed);
+            rb.linearVelocity = new Vector2(rb.linearVelocity.x, yVelocity);
+        }
+    }
+    
+    // Directed wall jump (jump + opposite direction)
+    private void DirectedWallJump()
+    {
+        // Stop wall sliding
+        isWallSliding = false;
+        
+        // Set wall jumping state
+        isWallJumping = true;
+        wallJumpCounter = wallJumpTime;
+        
+        // Apply a stronger impulse away from the wall (in the direction of input)
+        Vector2 jumpForceVector = new Vector2(moveInput * directedWallJumpForce, jumpForce);
+        
+        // Zero out current velocity to ensure consistent jump behavior
+        rb.linearVelocity = Vector2.zero;
+        
+        // Apply impulse force
+        rb.AddForce(jumpForceVector, ForceMode2D.Impulse);
+        
+        // Flip to face away from wall if not already facing that way
+        if ((moveInput > 0 && !facingRight) || (moveInput < 0 && facingRight))
+        {
+            Flip();
+        }
+        
+        // Set jumping state and animation
+        isJumping = true;
+        
+        if (animator != null)
+        {
+            // Trigger the jump animation
+            animator.SetTrigger("jump");
+        }
+    }
+    
+    // Wall jump
+    private void WallJump()
+    {
+        // Stop wall sliding
+        isWallSliding = false;
+        
+        // Set wall jumping state
+        isWallJumping = true;
+        wallJumpCounter = wallJumpTime;
+        
+        // Apply a more forceful impulse away from the wall
+        Vector2 jumpForceVector = new Vector2(-wallDirX * wallJumpForce, jumpForce);
+        
+        // Zero out current velocity to ensure consistent jump behavior
+        rb.linearVelocity = Vector2.zero;
+        
+        // Apply impulse force
+        rb.AddForce(jumpForceVector, ForceMode2D.Impulse);
+        
+        // Flip to face away from wall
+        if ((wallDirX > 0 && facingRight) || (wallDirX < 0 && !facingRight))
+        {
+            Flip();
+        }
+        
+        // Set jumping state and animation
+        isJumping = true;
+        
+        if (animator != null)
+        {
+            // Trigger the jump animation
+            animator.SetTrigger("jump");
+        }
     }
     
     // Custom method for handling the jump action
@@ -135,6 +313,9 @@ public class PlayerMovement : MonoBehaviour
                 {
                     isJumping = false;
                 }
+                
+                // Also end wall jumping state
+                isWallJumping = false;
                 
                 break;
             }

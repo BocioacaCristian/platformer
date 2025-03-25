@@ -46,3 +46,11 @@ EditorSettings:
   m_CacheServerDownloadBatchSize: 128
   m_EnableEnlightenBakedGI: 0
   m_ReferencedClipsExactNaming: 1
+  externalScriptEditor: <your editor path>
+  externalScriptEditorArgs: "$(File)"
+  generateAllOnProjectOpen: 1
+  internalScriptEditorArgs: "$(File)"
+  scriptCompilationDuringPlay: 0
+  editorSettingsAsset: {fileID: 0}
+  projectGenerationFlag: 65535
+
